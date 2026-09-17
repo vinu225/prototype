@@ -48,6 +48,8 @@ from backend.schemas import (
     ErrorResponse,
     HealthResponse,
     SatQueryResponse,
+    SARAnalysisResponse,
+    SARChannelStats,
     ToolInfo,
 )
 from backend.tool_registry import get_registry, get_tool
@@ -64,12 +66,13 @@ _LOG = logging.getLogger(__name__)
 app = FastAPI(
     title       = "SatQuery AI",
     description = (
-        "Remote-sensing multimodal AI — Phase 3 API.\n\n"
-        "Upload 12-channel (120×120) satellite .npy arrays and ask "
-        "natural-language questions. The backend automatically routes your "
-        "query to the correct specialist tool."
+        "Remote-sensing multimodal AI — Phase 3+4 API.\n\n"
+        "12-channel pipeline: upload [12,120,120] .npy arrays and ask "
+        "natural-language questions via /query or /analyse.\n\n"
+        "SAR demo: upload Sentinel-1 VH + VV TIFFs for statistical analysis "
+        "via /sar-analyse (no VLM invoked)."
     ),
-    version     = "0.3.0",
+    version     = "0.4.0",
     docs_url    = "/docs",
     redoc_url   = "/redoc",
 )
@@ -351,3 +354,193 @@ async def analyse_endpoint(
         result, query, session_id, routing_reason, input_files, input_metadata
     )
     return JSONResponse(status_code=200, content=response.model_dump())
+
+
+# =============================================================================
+# POST /sar-analyse  —  Phase 4 SAR demo (NO VLM)
+# =============================================================================
+
+@app.post(
+    "/sar-analyse",
+    response_model = SARAnalysisResponse,
+    summary        = "Sentinel-1 VH/VV statistical analysis (SAR demo, no VLM)",
+    tags           = ["SAR Demo"],
+)
+async def sar_analyse(
+    files: List[UploadFile] = File(
+        ...,
+        description=(
+            "Exactly 2 files: first VH TIFF/npy, then VV TIFF/npy. "
+            "Each must be a single-band (1-channel) array."
+        ),
+    ),
+):
+    """
+    Sentinel-1 SAR statistical analysis for demonstration purposes.
+
+    Accepts exactly two single-band files (VH + VV) and returns
+    backscatter statistics and a heuristic interpretation.
+
+    **Does NOT invoke the VLM or the 12-channel multimodal pipeline.**
+    The response always contains a `warning` field that makes this explicit.
+    """
+    session_id = generate_session_id()
+    _LOG.info("[%s] /sar-analyse — files=%s", session_id,
+              [f.filename for f in files])
+
+    # -- Validate file count -------------------------------------------------
+    if len(files) != 2:
+        return JSONResponse(
+            status_code=200,
+            content=SARAnalysisResponse(
+                success=False,
+                warning="SAR-only endpoint requires exactly 2 files (VH + VV).",
+                error=f"Expected 2 files, got {len(files)}.",
+            ).model_dump(),
+        )
+
+    vh_upload, vv_upload = files[0], files[1]
+
+    # -- Load each single-band file ------------------------------------------
+    def _load_single_band_upload(upload: UploadFile):
+        """
+        Load a 1-band TIFF or 1/2-D .npy into a float32 [H,W] array.
+        Returns (np.ndarray, error_str | None).
+        """
+        import io as _io
+        import os as _os
+        import tempfile as _tmp
+        from pathlib import Path as _Path
+        raw = upload.file.read()
+        ext = _Path(upload.filename or "").suffix.lower()
+
+        # 1. Check if payload is a NumPy array (via magic bytes or .npy extension)
+        if raw.startswith(b"\x93NUMPY") or ext == ".npy":
+            try:
+                arr = np.load(_io.BytesIO(raw))
+                if arr.ndim == 4 and arr.shape[0] == 1 and arr.shape[1] == 1:
+                    arr = arr[0, 0]
+                elif arr.ndim == 3 and arr.shape[0] == 1:
+                    arr = arr[0]
+                elif arr.ndim != 2:
+                    return None, f"{upload.filename}: expected 2-D or 1-band array, got shape {list(arr.shape)}"
+                return arr.astype(np.float32), None
+            except Exception as exc:
+                return None, f"Cannot parse {upload.filename} as .npy: {exc}"
+
+        # 2. Check for GeoTIFF / TIFF
+        elif ext in {".tif", ".tiff"} or raw.startswith(b"II*\x00") or raw.startswith(b"MM\x00*"):
+            # Primary: NamedTemporaryFile (.tif suffix) for robust GDAL driver detection
+            try:
+                import rasterio
+                tmp_path = None
+                with _tmp.NamedTemporaryFile(suffix=".tif", delete=False) as tf:
+                    tf.write(raw)
+                    tmp_path = tf.name
+                try:
+                    with rasterio.open(tmp_path) as ds:
+                        if ds.count != 1:
+                            return None, (
+                                f"{upload.filename}: expected 1-band TIFF, got {ds.count} bands. "
+                                "Each SAR file must be a single polarisation."
+                            )
+                        arr = ds.read(1).astype(np.float32)
+                        return arr, None
+                finally:
+                    if tmp_path:
+                        try: _os.unlink(tmp_path)
+                        except OSError: pass
+            except ImportError:
+                pass
+            except Exception as exc:
+                _LOG.warning("rasterio NamedTemporaryFile failed on %s: %s", upload.filename, exc)
+
+            # Fallback: rasterio MemoryFile
+            try:
+                import rasterio
+                from rasterio.io import MemoryFile
+                with MemoryFile(raw, filename=upload.filename or "sar.tif") as mf:
+                    with mf.open() as ds:
+                        if ds.count != 1:
+                            return None, (
+                                f"{upload.filename}: expected 1-band TIFF, got {ds.count} bands. "
+                                "Each SAR file must be a single polarisation."
+                            )
+                        arr = ds.read(1).astype(np.float32)
+                        return arr, None
+            except Exception as exc:
+                _LOG.warning("rasterio MemoryFile failed on %s: %s", upload.filename, exc)
+
+            # Fallback: PIL
+            try:
+                from PIL import Image
+                img = Image.open(_io.BytesIO(raw))
+                arr = np.array(img, dtype=np.float32)
+                if arr.ndim == 3:
+                    arr = arr[:, :, 0]
+                elif arr.ndim != 2:
+                    return None, f"{upload.filename}: unexpected shape {arr.shape} from PIL"
+                return arr, None
+            except Exception as exc:
+                return None, f"Cannot read {upload.filename}: {exc}"
+        else:
+            return None, f"Unsupported format {ext!r}. Use .tif/.tiff or .npy."
+
+    vh_arr, vh_err = _load_single_band_upload(vh_upload)
+    if vh_err:
+        return JSONResponse(status_code=200, content=SARAnalysisResponse(
+            success=False,
+            warning="SAR-only endpoint.",
+            error=f"VH file error: {vh_err}",
+        ).model_dump())
+
+    vv_arr, vv_err = _load_single_band_upload(vv_upload)
+    if vv_err:
+        return JSONResponse(status_code=200, content=SARAnalysisResponse(
+            success=False,
+            warning="SAR-only endpoint.",
+            error=f"VV file error: {vv_err}",
+        ).model_dump())
+
+    # -- Dimension check -----------------------------------------------------
+    if vh_arr.shape != vv_arr.shape:
+        return JSONResponse(status_code=200, content=SARAnalysisResponse(
+            success=False,
+            warning="SAR-only endpoint.",
+            error=(
+                f"VH/VV spatial mismatch: "
+                f"VH={list(vh_arr.shape)} vs VV={list(vv_arr.shape)}. "
+                "Both must have identical dimensions."
+            ),
+        ).model_dump())
+
+    # -- Run analysis (no VLM) -----------------------------------------------
+    from backend.sar_analyser import analyse_sar_pair, ChannelStats
+
+    result = analyse_sar_pair(vh_arr, vv_arr)
+
+    if not result.success:
+        return JSONResponse(status_code=200, content=SARAnalysisResponse(
+            success=False,
+            warning=result.warning,
+            error=result.error,
+        ).model_dump())
+
+    def _to_schema(cs: ChannelStats) -> SARChannelStats:
+        return SARChannelStats(
+            mean=cs.mean, std=cs.std, min=cs.min,
+            max=cs.max,   p25=cs.p25, p75=cs.p75,
+        )
+
+    return JSONResponse(status_code=200, content=SARAnalysisResponse(
+        success        = True,
+        mode           = "sentinel1_sar_only",
+        vh_stats       = _to_schema(result.vh_stats),
+        vv_stats       = _to_schema(result.vv_stats),
+        ratio_stats    = _to_schema(result.ratio_stats),
+        correlation    = result.correlation,
+        interpretation = result.interpretation,
+        shape          = result.shape,
+        processing_time= result.processing_time,
+        warning        = result.warning,
+    ).model_dump())

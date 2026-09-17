@@ -267,6 +267,242 @@ def test_accept_valid_npy():
 # =============================================================================
 # MAIN
 # =============================================================================
+
+# =============================================================================
+# SAR DEMO MODE TESTS
+# =============================================================================
+
+def make_1band_npy(h=120, w=120, seed=7) -> bytes:
+    rng = np.random.default_rng(seed)
+    arr = rng.random((h, w), dtype=np.float32)
+    buf = io.BytesIO(); np.save(buf, arr)
+    return buf.getvalue()
+
+
+# TEST 8 -- SAR pair processing imports
+def test_sar_imports():
+    section("TEST 8 -- SAR module imports")
+    ok = True
+    try:
+        from ui.input_processor import (
+            process_sar_pair_bytes, SARPairInput,
+        )
+        ok &= check(True, "process_sar_pair_bytes imported")
+        ok &= check(True, "SARPairInput imported")
+    except Exception as exc:
+        ok = check(False, f"SAR import failed: {exc}")
+    try:
+        from backend.sar_analyser import analyse_sar_pair, SARAnalysisResult
+        ok &= check(True, "backend.sar_analyser imported")
+        ok &= check(True, "analyse_sar_pair imported")
+        ok &= check(True, "SARAnalysisResult imported")
+    except Exception as exc:
+        ok &= check(False, f"sar_analyser import failed: {exc}")
+    results["sar_imports"] = PASS_STR if ok else FAIL_STR
+    print(f"\n  -> TEST 8: {results['sar_imports']}")
+
+
+# TEST 9 -- Valid VH + VV pair accepted
+def test_sar_valid_pair():
+    section("TEST 9 -- Valid VH + VV pair accepted")
+    from ui.input_processor import process_sar_pair_bytes, SARPairInput, InputError
+
+    vh_raw = make_1band_npy(120, 120, seed=1)
+    vv_raw = make_1band_npy(120, 120, seed=2)
+    result = process_sar_pair_bytes(vh_raw, vv_raw, "VH.npy", "VV.npy")
+
+    ok = check(isinstance(result, SARPairInput), "Valid 120x120 pair returns SARPairInput")
+    if isinstance(result, SARPairInput):
+        ok &= check(result.input_mode == "sentinel1_sar_pair", "  input_mode == 'sentinel1_sar_pair'")
+        ok &= check(result.vh_array.shape == (120, 120), "  vh_array shape == (120,120)")
+        ok &= check(result.vv_array.shape == (120, 120), "  vv_array shape == (120,120)")
+        ok &= check(result.info.get("model_compatible") is False, "  model_compatible is False")
+        ok &= check(len(result.vh_npy_bytes) > 0, "  vh_npy_bytes non-empty")
+
+    # Non-120x120 SAR (64x64) should also be accepted -- stats still work
+    vh64 = make_1band_npy(64, 64, seed=3)
+    vv64 = make_1band_npy(64, 64, seed=4)
+    r64  = process_sar_pair_bytes(vh64, vv64, "VH_64.npy", "VV_64.npy")
+    ok  &= check(isinstance(r64, SARPairInput), "64x64 SAR pair also accepted (stats still valid)")
+    if isinstance(r64, SARPairInput):
+        ok &= check(r64.vh_array.shape == (64, 64), "  shape preserved (64,64)")
+
+    results["sar_valid_pair"] = PASS_STR if ok else FAIL_STR
+    print(f"\n  -> TEST 9: {results['sar_valid_pair']}")
+
+
+# TEST 10 -- Dimension mismatch rejected
+def test_sar_dim_mismatch():
+    section("TEST 10 -- VH/VV dimension mismatch rejected")
+    from ui.input_processor import process_sar_pair_bytes, InputError
+
+    vh_raw = make_1band_npy(120, 120, seed=5)
+    vv_raw = make_1band_npy(100, 100, seed=6)
+    result = process_sar_pair_bytes(vh_raw, vv_raw, "VH.npy", "VV.npy")
+
+    ok = check(isinstance(result, InputError), "Mismatched 120x120 vs 100x100 rejected")
+    if isinstance(result, InputError):
+        ok &= check(result.code == "sar_dimension_mismatch",
+                    "  code == 'sar_dimension_mismatch'")
+
+    results["sar_dim_mismatch"] = PASS_STR if ok else FAIL_STR
+    print(f"\n  -> TEST 10: {results['sar_dim_mismatch']}")
+
+
+# TEST 11 -- SAR analyser statistics correctness
+def test_sar_analyser():
+    section("TEST 11 -- SAR analyser statistics")
+    from backend.sar_analyser import analyse_sar_pair
+
+    rng    = np.random.default_rng(99)
+    vh_arr = rng.random((120, 120), dtype=np.float32) * 0.5
+    vv_arr = rng.random((120, 120), dtype=np.float32) * 0.3
+
+    result = analyse_sar_pair(vh_arr, vv_arr)
+    ok = check(result.success, "analyse_sar_pair returns success=True")
+    ok &= check(result.vh_stats.mean > 0,    "  VH mean > 0")
+    ok &= check(result.vv_stats.mean > 0,    "  VV mean > 0")
+    ok &= check(-1 <= result.correlation <= 1, "  correlation in [-1,1]")
+    ok &= check(len(result.interpretation) > 20, "  interpretation non-empty")
+    ok &= check("SAR-only" in result.warning, "  warning contains 'SAR-only'")
+    ok &= check(result.shape == [120, 120],   "  shape == [120,120]")
+
+    # Shape mismatch returns success=False
+    bad = analyse_sar_pair(vh_arr, vv_arr[:100, :100])
+    ok &= check(bad.success is False, "  shape mismatch returns success=False")
+
+    results["sar_analyser"] = PASS_STR if ok else FAIL_STR
+    print(f"\n  -> TEST 11: {results['sar_analyser']}")
+
+
+# TEST 12 -- No accidental 12ch conversion from SAR
+def test_no_12ch_from_sar():
+    section("TEST 12 -- SAR pair NOT converted to [12,120,120]")
+    from ui.input_processor import process_sar_pair_bytes, SARPairInput
+
+    vh_raw = make_1band_npy(120, 120, seed=10)
+    vv_raw = make_1band_npy(120, 120, seed=11)
+    result = process_sar_pair_bytes(vh_raw, vv_raw)
+
+    ok = check(isinstance(result, SARPairInput), "Returns SARPairInput (not ProcessedInput)")
+    if isinstance(result, SARPairInput):
+        ok &= check(result.vh_array.ndim == 2, "  vh_array is 2-D [H,W] (not 3-D 12ch)")
+        ok &= check(result.vv_array.ndim == 2, "  vv_array is 2-D [H,W] (not 3-D 12ch)")
+        ok &= check(result.info.get("model_compatible") is False,
+                    "  model_compatible explicitly False")
+        ok &= check(result.input_mode == "sentinel1_sar_pair",
+                    "  input_mode == 'sentinel1_sar_pair' (not 12ch mode)")
+
+    results["no_12ch_from_sar"] = PASS_STR if ok else FAIL_STR
+    print(f"\n  -> TEST 12: {results['no_12ch_from_sar']}")
+
+
+# TEST 13 -- Existing 12ch workflow unaffected
+def test_12ch_workflow_intact():
+    section("TEST 13 -- Existing 12-channel workflow unaffected")
+    from ui.input_processor import process_npy_bytes, ProcessedInput, InputError
+
+    # Valid 12ch -- must still work
+    valid_raw = make_npy_bytes(12, 120, 120, seed=0)
+    result    = process_npy_bytes(valid_raw, "full_12ch.npy")
+    ok = check(isinstance(result, ProcessedInput), "[12,120,120] still returns ProcessedInput")
+    if isinstance(result, ProcessedInput):
+        ok &= check(result.array.shape == (12, 120, 120), "  shape == (12,120,120)")
+        ok &= check(result.info.get("valid") is True,     "  info['valid'] == True")
+
+    # Wrong channels -- still rejected
+    bad_raw = make_npy_bytes(2, 120, 120)
+    bad     = process_npy_bytes(bad_raw, "bad_2ch.npy")
+    ok &= check(isinstance(bad, InputError),           "2-channel still rejected")
+    ok &= check(bad.code == "wrong_channels",          "  code still 'wrong_channels'")
+
+    results["12ch_workflow_intact"] = PASS_STR if ok else FAIL_STR
+    print(f"\n  -> TEST 13: {results['12ch_workflow_intact']}")
+
+
+# TEST 14 -- GeoTIFF single-band ingestion without format error
+def test_sar_geotiff_ingestion():
+    section("TEST 14 -- GeoTIFF single-band ingestion without format error")
+    from ui.input_processor import _load_single_band
+    from rasterio.io import MemoryFile
+
+    # Create synthetic single-band GeoTIFF bytes
+    arr = (np.random.random((1, 120, 120)) * 0.25).astype(np.float32)
+    with MemoryFile() as mem:
+        with mem.open(driver="GTiff", width=120, height=120, count=1, dtype="float32") as dst:
+            dst.write(arr)
+        raw_tif = mem.read()
+
+    res = _load_single_band("test_vh.tif", raw_tif)
+    ok = check(not hasattr(res, "code"), "GeoTIFF loads without InputError")
+    if not hasattr(res, "code"):
+        arr_out, h, w = res
+        ok &= check(arr_out.shape == (120, 120), "  extracted 2-D array of shape (120, 120)")
+        ok &= check(h == 120 and w == 120,       "  height and width == 120")
+        ok &= check(arr_out.dtype == np.float32, "  dtype is float32")
+
+    results["sar_geotiff_ingestion"] = PASS_STR if ok else FAIL_STR
+    print(f"\n  -> TEST 14: {results['sar_geotiff_ingestion']}")
+
+
+# TEST 15 -- Demo presets and extended task options
+def test_presets_and_extended_tasks():
+    section("TEST 15 -- Demo presets & extended task selector")
+    from ui.input_processor import get_demo_preset, ProcessedInput
+    from ui.config import TASK_OPTIONS, PRESET_OPTIONS
+
+    # Check required task selector options
+    ok = check("Auto-Detect from Query (Default)" in TASK_OPTIONS, "Auto-Detect option present")
+    ok &= check("Flood / Water Detection" in TASK_OPTIONS,          "Flood / Water Detection present")
+    ok &= check("SAR Radar Analysis (Sentinel-1 Demo)" in TASK_OPTIONS, "SAR Demo task present")
+
+    # Check presets
+    for p_key in ("agriculture", "wetland", "urban"):
+        preset = get_demo_preset(p_key)
+        ok &= check(isinstance(preset, ProcessedInput), f"  preset '{p_key}' returns ProcessedInput")
+        ok &= check(preset.array.shape == (12, 120, 120), f"  preset '{p_key}' shape is [12,120,120]")
+        ok &= check(len(preset.npy_bytes) > 0,          f"  preset '{p_key}' npy_bytes non-empty")
+        ok &= check(preset.preview is not None,         f"  preset '{p_key}' has RGB preview")
+
+    results["presets_and_extended_tasks"] = PASS_STR if ok else FAIL_STR
+    print(f"\n  -> TEST 15: {results['presets_and_extended_tasks']}")
+
+
+# TEST 16 -- Live /sar-analyse endpoint accepts GeoTIFF files
+def test_backend_sar_endpoint_robustness():
+    section("TEST 16 -- /sar-analyse endpoint accepts GeoTIFF files")
+    from fastapi.testclient import TestClient
+    from backend.main import app
+    from rasterio.io import MemoryFile
+
+    def make_tif(val):
+        arr = (np.ones((1, 120, 120), dtype=np.float32) * val)
+        with MemoryFile() as mem:
+            with mem.open(driver="GTiff", width=120, height=120, count=1, dtype="float32") as dst:
+                dst.write(arr)
+            return mem.read()
+
+    client = TestClient(app)
+    vh_bytes = make_tif(0.04)
+    vv_bytes = make_tif(0.12)
+
+    resp = client.post("/sar-analyse", files=[
+        ("files", ("vh_actual.tif", vh_bytes, "image/tiff")),
+        ("files", ("vv_actual.tif", vv_bytes, "image/tiff")),
+    ])
+    ok = check(resp.status_code == 200, "/sar-analyse returns 200 OK for GeoTIFFs")
+    if resp.status_code == 200:
+        data = resp.json()
+        ok &= check(data.get("success") is True, "  success is True")
+        ok &= check(data.get("mode") == "sentinel1_sar_only", "  mode == 'sentinel1_sar_only'")
+        ok &= check(data.get("vh_stats", {}).get("mean") is not None, "  vh_stats computed")
+        ok &= check(data.get("vv_stats", {}).get("mean") is not None, "  vv_stats computed")
+        ok &= check("SAR-only" in data.get("warning", ""), "  disclaimer warning present")
+
+    results["backend_sar_endpoint_robustness"] = PASS_STR if ok else FAIL_STR
+    print(f"\n  -> TEST 16: {results['backend_sar_endpoint_robustness']}")
+
+
 if __name__ == "__main__":
     print("\n" + "=" * 56)
     print("  SATQUERY AI -- PHASE 4 TEST SUITE")
@@ -280,6 +516,15 @@ if __name__ == "__main__":
     test_reject_wrong_channels()
     test_reject_wrong_spatial()
     test_accept_valid_npy()
+    test_sar_imports()
+    test_sar_valid_pair()
+    test_sar_dim_mismatch()
+    test_sar_analyser()
+    test_no_12ch_from_sar()
+    test_12ch_workflow_intact()
+    test_sar_geotiff_ingestion()
+    test_presets_and_extended_tasks()
+    test_backend_sar_endpoint_robustness()
 
     elapsed  = time.perf_counter() - t_start
     all_pass = all(v == PASS_STR for v in results.values())
@@ -297,3 +542,5 @@ if __name__ == "__main__":
         print("  PHASE 4 FAILED -- Fix failures above before proceeding.")
     print("=" * 56)
     sys.exit(0 if all_pass else 1)
+
+

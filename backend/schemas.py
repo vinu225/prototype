@@ -92,3 +92,36 @@ class RoutingResult(BaseModel):
     routing_reason: str
     required_inputs: str          # "single_image" | "image_pair" | "optical_sar_pair"
     tool_name:      str
+
+
+# ── Phase 4 — SAR Demo schemas ────────────────────────────────────────────────
+
+class SARChannelStats(BaseModel):
+    """Per-channel statistics for a single SAR polarisation band."""
+    mean: float
+    std:  float
+    min:  float
+    max:  float
+    p25:  float
+    p75:  float
+
+
+class SARAnalysisResponse(BaseModel):
+    """
+    Response from POST /sar-analyse.
+
+    This endpoint is EXCLUSIVELY for Sentinel-1 VH/VV statistical analysis.
+    It does NOT invoke the VLM or the 12-channel multimodal pipeline.
+    The 'warning' field makes this explicit in every response.
+    """
+    success:         bool
+    mode:            str = "sentinel1_sar_only"
+    vh_stats:        SARChannelStats | None = None
+    vv_stats:        SARChannelStats | None = None
+    ratio_stats:     SARChannelStats | None = None   # VH/VV element-wise ratio
+    correlation:     float | None = None             # Pearson r(VH, VV)
+    interpretation:  str = ""                        # heuristic text
+    shape:           list = []                       # [H, W]
+    processing_time: float = 0.0
+    warning:         str   = ""                      # SAR-only disclaimer (always set)
+    error:           str | None = None
