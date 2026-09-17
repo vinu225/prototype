@@ -10,7 +10,7 @@ from __future__ import annotations
 
 # -- Backend --------------------------------------------------------------------
 
-BACKEND_URL: str = "http://localhost:8000"
+BACKEND_URL: str = "https://prototype-lnzg.onrender.com"
 
 # -- Task options ---------------------------------------------------------------
 
