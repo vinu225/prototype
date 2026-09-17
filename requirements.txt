@@ -1,0 +1,38 @@
+# SatQuery AI — Requirements (Phase 1 + Phase 2 + Phase 3)
+# Python >= 3.11 recommended (matches Colab reben-env)
+#
+# Install with:
+#   pip install -r requirements.txt
+#
+# Then install the reben encoder package from source:
+#   pip install git+https://github.com/sihechen0530/reben-training-scripts.git
+
+# ── Core deep-learning stack ────────────────────────────────────────────────
+torch>=2.0.0
+torchvision>=0.15.0          # used by SentinelDataset resize transform
+
+# ── HuggingFace ecosystem ────────────────────────────────────────────────────
+transformers>=4.40.0,<4.58.0  # AutoTokenizer + AutoModelForCausalLM for Qwen2.5
+huggingface_hub>=0.34.0       # snapshot_download / from_pretrained
+
+# ── BigEarthNet MobileViT-S dependencies ────────────────────────────────────
+configilm>=0.7.0              # ILMConfiguration used inside reben_publication
+timm>=1.0.0                   # MobileViT backbone (loaded by configilm/reben)
+
+# ── Numeric / IO ─────────────────────────────────────────────────────────────
+numpy>=1.24.0
+Pillow>=9.0.0                 # save_rgb_composite helper
+
+# ── Phase 3 — FastAPI backend ─────────────────────────────────────────────────
+fastapi>=0.100.0              # FastAPI web framework
+"uvicorn[standard]>=0.22.0"  # ASGI server with hot-reload support
+python-multipart>=0.0.6       # Required for FastAPI multipart file uploads (UploadFile)
+pydantic>=2.0.0               # Request/response schemas
+
+# ── Phase 4 — Streamlit UI ────────────────────────────────────────────────────
+streamlit>=1.35.0            # Streamlit web UI framework
+# requests is already pulled in by huggingface_hub / transformers
+# rasterio is already pulled in by bigearthnet-encoder (optional: TIFF support)
+
+# ── reben-training-scripts (install separately — not on PyPI) ────────────────
+# pip install git+https://github.com/sihechen0530/reben-training-scripts.git

@@ -1,0 +1,115 @@
+# ==============================
+# Python
+# ==============================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# ==============================
+# Virtual Environment
+# ==============================
+venv/
+venv311/
+.venv/
+env/
+ENV/
+
+# ==============================
+# Environment / Secrets
+# ==============================
+.env
+.env.*
+!.env.example
+
+# ==============================
+# IDE / Editors
+# ==============================
+.vscode/
+.idea/
+*.code-workspace
+
+# ==============================
+# OS files
+# ==============================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==============================
+# Logs
+# ==============================
+logs/
+*.log
+audit_logs/
+# ==============================
+# Python tooling
+# ==============================
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ==============================
+# Jupyter
+# ==============================
+.ipynb_checkpoints/
+
+# ==============================
+# Hugging Face / ML caches
+# ==============================
+.cache/
+huggingface/
+hf_cache/
+
+# ==============================
+# ML model weights
+# ==============================
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+
+# ==============================
+# Large datasets
+# ==============================
+data/
+datasets/
+dataset/
+*.npy
+*.npz
+*.tif
+*.tiff
+*.jp2
+*.zst
+
+# ==============================
+# Generated outputs
+# ==============================
+outputs/
+results/
+artifacts/
+tmp/
+temp/
+
+# ==============================
+# Streamlit
+# ==============================
+.streamlit/secrets.toml
+
+# ==============================
+# Build / packaging
+# ==============================
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ==============================
+# Misc
+# ==============================
+*.swp
+*.swo
